@@ -390,7 +390,7 @@ func TestCacheReadFile(t *testing.T) {
 	}
 
 	out, err := cache.ReadFile(testFile)
-	if (err != nil && err != ItemNotInCache) || !ValidateDataMatchesFile(out, testFile) {
+	if (err != nil && err != ErrItemNotInCache) || !ValidateDataMatchesFile(out, testFile) {
 		fmt.Println("failed")
 		fmt.Printf("[!] transparent file read has failed: ")
 		if err != nil {

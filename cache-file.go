@@ -1,10 +1,8 @@
-//go:build !go1.18
-
 package filecache
 
 import (
-	"io/ioutil"
 	"os"
+	"time"
 )
 
 func cacheFile(path string, maxSize int64) (itm *cacheItem, err error) {
@@ -12,12 +10,12 @@ func cacheFile(path string, maxSize int64) (itm *cacheItem, err error) {
 	if err != nil {
 		return
 	} else if fi.Mode().IsDir() {
-		return nil, ItemIsDirectory
+		return nil, ErrItemIsDirectory
 	} else if fi.Size() > maxSize {
-		return nil, ItemTooLarge
+		return nil, ErrItemTooLarge
 	}
 
-	content, err := ioutil.ReadFile(path)
+	content, err := os.ReadFile(path)
 	if err != nil {
 		return
 	}
@@ -42,9 +40,9 @@ func (cache *FileCache) ReadFile(name string) (content []byte, err error) {
 		content, _ = cache.GetItem(name)
 	} else {
 		go cache.Cache(name)
-		content, err = ioutil.ReadFile(name)
+		content, err = os.ReadFile(name)
 		if err == nil && !SquelchItemNotInCache {
-			err = ItemNotInCache
+			err = ErrItemNotInCache
 		}
 	}
 	return

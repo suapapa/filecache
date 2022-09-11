@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"mime"
 	"net/http"
 	"net/url"
@@ -15,7 +16,7 @@ import (
 	"time"
 )
 
-const VERSION = "1.0.2"
+const VERSION = "1.0.3rc"
 
 // File size constants for use with FileCache.MaxSize.
 // For example, cache.MaxSize = 64 * Megabyte
@@ -33,11 +34,11 @@ var (
 )
 
 var (
-	InvalidCacheItem = errors.New("invalid cache item")
-	ItemIsDirectory  = errors.New("can't cache a directory")
-	ItemNotInCache   = errors.New("item not in cache")
-	ItemTooLarge     = errors.New("item too large for cache")
-	WriteIncomplete  = errors.New("incomplete write of cache item")
+	ErrInvalidCacheItem = errors.New("invalid cache item")
+	ErrItemIsDirectory  = errors.New("can't cache a directory")
+	ErrItemNotInCache   = errors.New("item not in cache")
+	ErrItemTooLarge     = errors.New("item too large for cache")
+	ErrWriteIncomplete  = errors.New("incomplete write of cache item")
 )
 
 var SquelchItemNotInCache = true
@@ -74,7 +75,7 @@ func (itm *cacheItem) Access() []byte {
 func (itm *cacheItem) Dur() time.Duration {
 	itm.lock.Lock()
 	defer itm.lock.Unlock()
-	return time.Now().Sub(itm.Lastaccess)
+	return time.Since(itm.Lastaccess)
 }
 
 // FileCache represents a cache in memory.
@@ -87,10 +88,11 @@ type FileCache struct {
 	mutex      sync.Mutex
 	shutdown   chan interface{}
 	wait       sync.WaitGroup
-	MaxItems   int   // Maximum number of files to cache
-	MaxSize    int64 // Maximum file size to store
-	ExpireItem int   // Seconds a file should be cached for
-	Every      int   // Run an expiration check Every seconds
+	Root       string // cache root
+	MaxItems   int    // Maximum number of files to cache
+	MaxSize    int64  // Maximum file size to store
+	ExpireItem int    // Seconds a file should be cached for
+	Every      int    // Run an expiration check Every seconds
 }
 
 // NewDefaultCache returns a new FileCache with sane defaults.
@@ -152,7 +154,7 @@ func (cache *FileCache) addItem(name string) (err error) {
 		return
 	}
 	if !cache.InCache(name) {
-		return ItemNotInCache
+		return ErrItemNotInCache
 	}
 	return nil
 }
@@ -214,7 +216,7 @@ func (cache *FileCache) vacuum() {
 	cache.wait.Add(1)
 	for {
 		select {
-		case _ = <-cache.shutdown:
+		case <-cache.shutdown:
 			cache.wait.Done()
 			return
 		case <-time.After(cache.dur):
@@ -222,7 +224,7 @@ func (cache *FileCache) vacuum() {
 				cache.wait.Done()
 				return
 			}
-			for name, _ := range cache.items {
+			for name := range cache.items {
 				if cache.itemExpired(name) {
 					cache.deleteItem(name)
 				}
@@ -311,7 +313,7 @@ func (cache *FileCache) StoredFiles() (fileList []string) {
 
 	cache.lock()
 	defer cache.unlock()
-	for name, _ := range cache.items {
+	for name := range cache.items {
 		fileList = append(fileList, name)
 	}
 	return
@@ -332,7 +334,7 @@ func (cache *FileCache) WriteItem(w io.Writer, name string) (err error) {
 	itm, ok := cache.getItem(name)
 	if !ok {
 		if !SquelchItemNotInCache {
-			err = ItemNotInCache
+			err = ErrItemNotInCache
 		}
 		return
 	}
@@ -342,7 +344,7 @@ func (cache *FileCache) WriteItem(w io.Writer, name string) (err error) {
 	if err != nil {
 		return
 	} else if int64(n) != itm.Size {
-		err = WriteIncomplete
+		err = ErrWriteIncomplete
 		return
 	}
 	return
@@ -391,7 +393,7 @@ func (cache *FileCache) WriteFile(w io.Writer, name string) (err error) {
 		if err != nil {
 			return
 		} else if fi.IsDir() {
-			return ItemIsDirectory
+			return ErrItemIsDirectory
 		}
 		go cache.Cache(name)
 		var file *os.File
@@ -407,33 +409,37 @@ func (cache *FileCache) WriteFile(w io.Writer, name string) (err error) {
 }
 
 func (cache *FileCache) HttpWriteFile(w http.ResponseWriter, r *http.Request) {
-	path, err := url.QueryUnescape(r.URL.String())
+	var err error
+	p := filepath.Join(cache.Root, r.URL.Path)
+	p, err = url.QueryUnescape(p)
+	log.Println("p=", p)
 	if err != nil {
 		http.ServeFile(w, r, r.URL.Path)
-	} else if len(path) > 1 {
-		path = path[1:len(path)]
+	} else if len(p) > 1 {
+		// do nothing
+		// p = p[1:]
 	} else {
 		http.ServeFile(w, r, ".")
 		return
 	}
 
-	if cache.InCache(path) {
-		itm := cache.items[path]
+	if cache.InCache(p) {
+		itm := cache.items[p]
 		ctype := http.DetectContentType(itm.Access())
-		mtype := mime.TypeByExtension(filepath.Ext(path))
+		mtype := mime.TypeByExtension(filepath.Ext(p))
 		if mtype != "" && mtype != ctype {
 			ctype = mtype
 		}
 		header := w.Header()
 		header.Set("content-length", fmt.Sprintf("%d", itm.Size))
 		header.Set("content-disposition",
-			fmt.Sprintf("filename=%s", filepath.Base(path)))
+			fmt.Sprintf("filename=%s", filepath.Base(p)))
 		header.Set("content-type", ctype)
 		w.Write(itm.Access())
 		return
 	}
-	go cache.Cache(path)
-	http.ServeFile(w, r, path)
+	go cache.Cache(p)
+	http.ServeFile(w, r, p)
 }
 
 // HttpHandler returns a valid HTTP handler for the given cache.
