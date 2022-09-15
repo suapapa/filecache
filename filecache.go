@@ -54,7 +54,7 @@ type cacheItem struct {
 	Modified   time.Time
 }
 
-func (itm *cacheItem) WasModified(fi os.FileInfo) bool {
+func (itm *cacheItem) WasNotModified(fi os.FileInfo) bool {
 	itm.lock.Lock()
 	defer itm.lock.Unlock()
 	return itm.Modified.Equal(fi.ModTime())
@@ -82,17 +82,18 @@ func (itm *cacheItem) Dur() time.Duration {
 // An ExpireItem value of 0 means that items should not be expired based
 // on time in memory.
 type FileCache struct {
-	dur        time.Duration
-	items      map[string]*cacheItem
-	in         chan string
-	mutex      sync.Mutex
-	shutdown   chan interface{}
-	wait       sync.WaitGroup
-	Root       string // cache root
-	MaxItems   int    // Maximum number of files to cache
-	MaxSize    int64  // Maximum file size to store
-	ExpireItem int    // Seconds a file should be cached for
-	Every      int    // Run an expiration check Every seconds
+	dur         time.Duration
+	items       map[string]*cacheItem
+	in          chan string
+	mutex       sync.Mutex
+	shutdown    chan interface{}
+	wait        sync.WaitGroup
+	Root        string // cache root
+	MaxItems    int    // Maximum number of files to cache
+	MaxSize     int64  // Maximum file size to store
+	ExpireItem  int    // Seconds a file should be cached for
+	Every       int    // Run an expiration check Every seconds
+	CheckModify bool   // check file is modified
 }
 
 // NewDefaultCache returns a new FileCache with sane defaults.
@@ -247,7 +248,7 @@ func (cache *FileCache) changed(name string) bool {
 	fi, err := os.Stat(name)
 	if err != nil {
 		return true
-	} else if !itm.WasModified(fi) {
+	} else if !itm.WasNotModified(fi) {
 		return true
 	}
 	return false
@@ -271,7 +272,7 @@ func (cache *FileCache) expired(name string) bool {
 
 // itemExpired returns true if an item is expired.
 func (cache *FileCache) itemExpired(name string) bool {
-	if cache.changed(name) {
+	if cache.CheckModify && cache.changed(name) {
 		return true
 	} else if cache.ExpireItem != 0 && cache.expired(name) {
 		return true
@@ -321,7 +322,7 @@ func (cache *FileCache) StoredFiles() (fileList []string) {
 
 // InCache returns true if the item is in the cache.
 func (cache *FileCache) InCache(name string) bool {
-	if cache.changed(name) {
+	if cache.CheckModify && cache.changed(name) {
 		cache.deleteItem(name)
 		return false
 	}
@@ -412,13 +413,13 @@ func (cache *FileCache) HttpWriteFile(w http.ResponseWriter, r *http.Request) {
 	var err error
 	p := filepath.Join(cache.Root, r.URL.Path)
 	p, err = url.QueryUnescape(p)
-	log.Println("p=", p)
 	if err != nil {
+		log.Printf("url query unescape failed: %v", err)
 		http.ServeFile(w, r, r.URL.Path)
-	} else if len(p) > 1 {
-		// do nothing
-		// p = p[1:]
-	} else {
+		return
+	}
+
+	if len(p) <= 1 {
 		http.ServeFile(w, r, ".")
 		return
 	}
